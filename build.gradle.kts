@@ -1,0 +1,78 @@
+import org.apache.commons.lang3.SystemUtils
+
+plugins {
+    idea
+    java
+    id("gg.essential.loom") version "0.10.0.+"
+    id("dev.architectury.architectury-pack200") version "0.1.3"
+}
+
+val baseGroup: String by project
+val mcVersion: String by project
+val version: String by project
+val modid: String by project
+
+// Minecraft 1.8.9 runs on Java 8; Gradle itself can run on a newer JDK and fetch this toolchain.
+java {
+    toolchain.languageVersion.set(JavaLanguageVersion.of(8))
+}
+
+loom {
+    log4jConfigs.from(file("log4j2.xml"))
+    runConfigs {
+        "client" {
+            if (SystemUtils.IS_OS_MAC_OSX) {
+                // This argument causes a crash on macOS
+                vmArgs.remove("-XstartOnFirstThread")
+            }
+        }
+        remove(getByName("server"))
+    }
+    forge {
+        pack200Provider.set(dev.architectury.pack200.java.Pack200Adapter())
+    }
+}
+
+sourceSets.main {
+    output.setResourcesDir(sourceSets.main.flatMap { it.java.classesDirectory })
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    minecraft("com.mojang:minecraft:1.8.9")
+    mappings("de.oceanlabs.mcp:mcp_stable:22-1.8.9")
+    forge("net.minecraftforge:forge:1.8.9-11.15.1.2318-1.8.9")
+}
+
+tasks.withType(JavaCompile::class) {
+    options.encoding = "UTF-8"
+}
+
+tasks.withType(org.gradle.jvm.tasks.Jar::class) {
+    archiveBaseName.set(modid)
+}
+
+tasks.processResources {
+    inputs.property("version", project.version)
+    inputs.property("mcversion", mcVersion)
+    inputs.property("modid", modid)
+
+    filesMatching(listOf("mcmod.info")) {
+        expand(inputs.properties)
+    }
+}
+
+// The final, reobfuscated jar (the one you put in .minecraft/mods) is build/libs/trajectories-1.0.0.jar
+val remapJar by tasks.named<net.fabricmc.loom.task.RemapJarTask>("remapJar") {
+    archiveClassifier.set("")
+}
+
+tasks.jar {
+    archiveClassifier.set("without-deps")
+    destinationDirectory.set(layout.buildDirectory.dir("intermediates"))
+}
+
+tasks.assemble.get().dependsOn(tasks.remapJar)

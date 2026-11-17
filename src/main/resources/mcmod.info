@@ -1,0 +1,16 @@
+[
+  {
+    "modid": "${modid}",
+    "name": "Trajectories",
+    "description": "Exact, vanilla-physics trajectory preview for bows, ender pearls, snowballs, eggs, splash potions and XP bottles.",
+    "version": "${version}",
+    "mcversion": "${mcversion}",
+    "authorList": [],
+    "credits": "",
+    "logoFile": "",
+    "url": "",
+    "parent": "",
+    "screenshots": [],
+    "dependencies": []
+  }
+]
