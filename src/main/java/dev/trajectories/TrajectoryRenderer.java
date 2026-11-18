@@ -7,11 +7,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.ScaledResolution;
-import net.minecraft.client.renderer.GlStateManager;
-import net.minecraft.client.renderer.RenderGlobal;
-import net.minecraft.client.renderer.Tessellator;
-import net.minecraft.client.renderer.WorldRenderer;
-import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
+import net.minecraft.client.renderer.OpenGlHelper;
 import net.minecraft.enchantment.Enchantment;
 import net.minecraft.enchantment.EnchantmentHelper;
 import net.minecraft.entity.Entity;
@@ -137,64 +133,91 @@ public class TrajectoryRenderer {
     }
 
     // ------------------------------------------------------------------ drawing
+    // Plain immediate-mode OpenGL with every relevant state forced, so nothing the game left
+    // enabled (textures, lightmap, fog, alpha test, lighting) can hide or tint the line.
 
     private void drawScene(TrajectoryCalculator.Result r, double vx, double vy, double vz, int rgb) {
-        int cr = (rgb >> 16) & 255, cg = (rgb >> 8) & 255, cb = rgb & 255;
+        float cr = ((rgb >> 16) & 255) / 255.0F;
+        float cg = ((rgb >> 8) & 255) / 255.0F;
+        float cb = (rgb & 255) / 255.0F;
 
-        GlStateManager.pushMatrix();
-        GlStateManager.disableTexture2D();
-        GlStateManager.disableLighting();
-        GlStateManager.disableCull();
-        GlStateManager.enableBlend();
-        GlStateManager.tryBlendFuncSeparate(770, 771, 1, 0);
-        GlStateManager.depthMask(false);
-        if (TrajectoryConfig.throughWalls) {
-            GlStateManager.disableDepth();
-        }
+        GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
+        GL11.glPushMatrix();
+
+        // texturing off on BOTH texture units (lightmap + block atlas)
+        OpenGlHelper.setActiveTexture(OpenGlHelper.lightmapTexUnit);
+        boolean lightmapOn = GL11.glIsEnabled(GL11.GL_TEXTURE_2D);
+        GL11.glDisable(GL11.GL_TEXTURE_2D);
+        OpenGlHelper.setActiveTexture(OpenGlHelper.defaultTexUnit);
+        boolean texOn = GL11.glIsEnabled(GL11.GL_TEXTURE_2D);
+        GL11.glDisable(GL11.GL_TEXTURE_2D);
+
+        GL11.glDisable(GL11.GL_LIGHTING);
+        GL11.glDisable(GL11.GL_FOG);
+        GL11.glDisable(GL11.GL_ALPHA_TEST);
+        GL11.glDisable(GL11.GL_CULL_FACE);
+        GL11.glEnable(GL11.GL_BLEND);
+        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        GL11.glDepthMask(false);
         GL11.glEnable(GL11.GL_LINE_SMOOTH);
         GL11.glLineWidth(TrajectoryConfig.lineWidth);
 
-        Tessellator tess = Tessellator.getInstance();
-        WorldRenderer wr = tess.getWorldRenderer();
+        if (TrajectoryConfig.throughWalls) {
+            GL11.glDisable(GL11.GL_DEPTH_TEST);
+            drawPath(r, vx, vy, vz, cr, cg, cb, 1.0F);
+        } else {
+            // faint pass that ignores depth (so you always see the arc), then the solid depth-tested pass
+            GL11.glDisable(GL11.GL_DEPTH_TEST);
+            drawPath(r, vx, vy, vz, cr, cg, cb, 0.30F);
+            GL11.glEnable(GL11.GL_DEPTH_TEST);
+            drawPath(r, vx, vy, vz, cr, cg, cb, 1.0F);
+        }
 
-        // the path: fades in slightly from the shooter so it never clutters the screen centre
-        wr.begin(GL11.GL_LINE_STRIP, DefaultVertexFormats.POSITION_COLOR);
+        if (TrajectoryConfig.throughWalls) {
+            GL11.glDisable(GL11.GL_DEPTH_TEST);
+        } else {
+            GL11.glEnable(GL11.GL_DEPTH_TEST);
+        }
+
+        if (r.blockHit != null && r.blockHit.sideHit != null) {
+            drawFaceMarker(r.hitVec, r.blockHit.sideHit, vx, vy, vz, cr, cg, cb);
+        } else if (r.entityHit != null) {
+            GL11.glLineWidth(2.0F);
+            drawBox(r.entityHit.getEntityBoundingBox().expand(0.002D, 0.002D, 0.002D), vx, vy, vz, cr, cg, cb);
+        } else if (!r.hitSomething() && !r.points.isEmpty()) {
+            drawCross(r.points.get(r.points.size() - 1), vx, vy, vz, cr, cg, cb);
+        }
+
+        GL11.glPopMatrix();
+        GL11.glPopAttrib();
+
+        // put texturing back exactly as we found it
+        if (texOn) {
+            GL11.glEnable(GL11.GL_TEXTURE_2D);
+        }
+        OpenGlHelper.setActiveTexture(OpenGlHelper.lightmapTexUnit);
+        if (lightmapOn) {
+            GL11.glEnable(GL11.GL_TEXTURE_2D);
+        }
+        OpenGlHelper.setActiveTexture(OpenGlHelper.defaultTexUnit);
+        GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+    }
+
+    private void drawPath(TrajectoryCalculator.Result r, double vx, double vy, double vz,
+                          float cr, float cg, float cb, float alphaScale) {
+        GL11.glBegin(GL11.GL_LINE_STRIP);
         int n = r.points.size();
         for (int i = 0; i < n; i++) {
             Vec3 p = r.points.get(i);
-            int a = i < 3 ? 70 + i * 50 : 230;
-            wr.pos(p.xCoord - vx, p.yCoord - vy, p.zCoord - vz).color(cr, cg, cb, a).endVertex();
+            float a = (i < 3 ? (70 + i * 50) / 255.0F : 0.95F) * alphaScale;
+            GL11.glColor4f(cr, cg, cb, a);
+            GL11.glVertex3d(p.xCoord - vx, p.yCoord - vy, p.zCoord - vz);
         }
-        tess.draw();
-
-        if (r.blockHit != null && r.blockHit.sideHit != null) {
-            drawFaceMarker(tess, wr, r.hitVec, r.blockHit.sideHit, vx, vy, vz, cr, cg, cb);
-        } else if (r.entityHit != null) {
-            AxisAlignedBB box = r.entityHit.getEntityBoundingBox().expand(0.002D, 0.002D, 0.002D)
-                    .offset(-vx, -vy, -vz);
-            GL11.glLineWidth(2.0F);
-            RenderGlobal.drawOutlinedBoundingBox(box, cr, cg, cb, 255);
-        } else if (r.hitVec == null && n > 0) {
-            // no impact: small cross where the simulation stopped
-            Vec3 p = r.points.get(n - 1);
-            drawCross(tess, wr, p, vx, vy, vz, cr, cg, cb);
-        }
-
-        GL11.glLineWidth(1.0F);
-        GL11.glDisable(GL11.GL_LINE_SMOOTH);
-        if (TrajectoryConfig.throughWalls) {
-            GlStateManager.enableDepth();
-        }
-        GlStateManager.depthMask(true);
-        GlStateManager.disableBlend();
-        GlStateManager.enableCull();
-        GlStateManager.enableTexture2D();
-        GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
-        GlStateManager.popMatrix();
+        GL11.glEnd();
     }
 
-    private void drawFaceMarker(Tessellator tess, WorldRenderer wr, Vec3 hit, EnumFacing face,
-                                double vx, double vy, double vz, int r, int g, int b) {
+    private void drawFaceMarker(Vec3 hit, EnumFacing face, double vx, double vy, double vz,
+                                float r, float g, float b) {
         double s = 0.3D;
         double ox = hit.xCoord - vx + face.getFrontOffsetX() * 0.004D;
         double oy = hit.yCoord - vy + face.getFrontOffsetY() * 0.004D;
@@ -213,30 +236,54 @@ public class TrajectoryRenderer {
                 break;
         }
 
-        wr.begin(GL11.GL_QUADS, DefaultVertexFormats.POSITION_COLOR);
+        GL11.glColor4f(r, g, b, 0.28F);
+        GL11.glBegin(GL11.GL_QUADS);
         for (double[] p : c) {
-            wr.pos(p[0], p[1], p[2]).color(r, g, b, 70).endVertex();
+            GL11.glVertex3d(p[0], p[1], p[2]);
         }
-        tess.draw();
+        GL11.glEnd();
 
-        wr.begin(GL11.GL_LINE_LOOP, DefaultVertexFormats.POSITION_COLOR);
+        GL11.glColor4f(r, g, b, 1.0F);
+        GL11.glBegin(GL11.GL_LINE_LOOP);
         for (double[] p : c) {
-            wr.pos(p[0], p[1], p[2]).color(r, g, b, 255).endVertex();
+            GL11.glVertex3d(p[0], p[1], p[2]);
         }
-        tess.draw();
+        GL11.glEnd();
     }
 
-    private void drawCross(Tessellator tess, WorldRenderer wr, Vec3 p, double vx, double vy, double vz,
-                           int r, int g, int b) {
+    private void drawCross(Vec3 p, double vx, double vy, double vz, float r, float g, float b) {
         double x = p.xCoord - vx, y = p.yCoord - vy, z = p.zCoord - vz, s = 0.25D;
-        wr.begin(GL11.GL_LINES, DefaultVertexFormats.POSITION_COLOR);
-        wr.pos(x - s, y, z).color(r, g, b, 255).endVertex();
-        wr.pos(x + s, y, z).color(r, g, b, 255).endVertex();
-        wr.pos(x, y - s, z).color(r, g, b, 255).endVertex();
-        wr.pos(x, y + s, z).color(r, g, b, 255).endVertex();
-        wr.pos(x, y, z - s).color(r, g, b, 255).endVertex();
-        wr.pos(x, y, z + s).color(r, g, b, 255).endVertex();
-        tess.draw();
+        GL11.glColor4f(r, g, b, 1.0F);
+        GL11.glBegin(GL11.GL_LINES);
+        GL11.glVertex3d(x - s, y, z);
+        GL11.glVertex3d(x + s, y, z);
+        GL11.glVertex3d(x, y - s, z);
+        GL11.glVertex3d(x, y + s, z);
+        GL11.glVertex3d(x, y, z - s);
+        GL11.glVertex3d(x, y, z + s);
+        GL11.glEnd();
+    }
+
+    private void drawBox(AxisAlignedBB bb, double vx, double vy, double vz, float r, float g, float b) {
+        double x1 = bb.minX - vx, y1 = bb.minY - vy, z1 = bb.minZ - vz;
+        double x2 = bb.maxX - vx, y2 = bb.maxY - vy, z2 = bb.maxZ - vz;
+        GL11.glColor4f(r, g, b, 1.0F);
+        GL11.glBegin(GL11.GL_LINES);
+        // bottom
+        line(x1, y1, z1, x2, y1, z1); line(x2, y1, z1, x2, y1, z2);
+        line(x2, y1, z2, x1, y1, z2); line(x1, y1, z2, x1, y1, z1);
+        // top
+        line(x1, y2, z1, x2, y2, z1); line(x2, y2, z1, x2, y2, z2);
+        line(x2, y2, z2, x1, y2, z2); line(x1, y2, z2, x1, y2, z1);
+        // pillars
+        line(x1, y1, z1, x1, y2, z1); line(x2, y1, z1, x2, y2, z1);
+        line(x2, y1, z2, x2, y2, z2); line(x1, y1, z2, x1, y2, z2);
+        GL11.glEnd();
+    }
+
+    private static void line(double ax, double ay, double az, double bx, double by, double bz) {
+        GL11.glVertex3d(ax, ay, az);
+        GL11.glVertex3d(bx, by, bz);
     }
 
     // ------------------------------------------------------------------ HUD
